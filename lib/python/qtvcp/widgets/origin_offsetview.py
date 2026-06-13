@@ -346,10 +346,10 @@ class OriginOffsetView(QTableView, _HalWidgetBase):
             g59_2 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
             g59_3 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
             if self.filename is None:
-                return g54, g55, g56, g57, g58, g59, g59_1, g59_2, g59_3
+                return [g54, g55, g56, g57, g58, g59, g59_1, g59_2, g59_3]
             if not os.path.exists(self.filename):
                 LOG.error('File does not exist: yellow<{}>'.format(self.filename))
-                return g54, g55, g56, g57, g58, g59, g59_1, g59_2, g59_3
+                return [g54, g55, g56, g57, g58, g59, g59_1, g59_2, g59_3]
             logfile = open(self.filename, "r").readlines()
             for line in logfile:
                 temp = line.split()
