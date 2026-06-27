@@ -3017,12 +3017,13 @@ void SET_SPINDLE_SPEED(int s, double speed_rpm)
     interp_list.append(SPINDLE_SPEED_<EMC_SPINDLE_SPEED>(s, 0, speed_rpm));
 }
 
-void STOP_SPINDLE_TURNING(int s)
+void STOP_SPINDLE_TURNING(int s, int wait_for_atspeed)
 {
     auto emc_spindle_off_msg = std::make_unique<EMC_SPINDLE_OFF>();
 
     flush_segments();
     emc_spindle_off_msg->spindle = s;
+    emc_spindle_off_msg->wait_for_spindle_at_speed = wait_for_atspeed;
     interp_list.append(std::move(emc_spindle_off_msg));
     // Added by atp 6/1/18 not sure this is right. There is a problem that the _second_ S word starts the spindle without M3/M4
     canon.spindle[s].dir = 0;
@@ -3890,7 +3891,7 @@ void GET_EXTERNAL_PARAMETER_FILE_NAME(char *file_name,	/* string: to copy
 				      int max_size)
 {				/* maximum number of characters to copy */
     // Paranoid checks
-    if (0 == file_name)
+    if (NULL == file_name)
 	return;
 
     if (max_size < 0)
@@ -4155,7 +4156,7 @@ double GET_EXTERNAL_ANALOG_INPUT(int index, double /*def*/)
 
 
 USER_DEFINED_FUNCTION_TYPE USER_DEFINED_FUNCTION[USER_DEFINED_FUNCTION_NUM]
-    = { 0 };
+    = { NULL };
 
 int USER_DEFINED_FUNCTION_ADD(USER_DEFINED_FUNCTION_TYPE func, int num)
 {

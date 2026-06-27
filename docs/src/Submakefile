@@ -1,10 +1,7 @@
-.PHONY: docs docclean checkref
+.PHONY: docs docclean
 .PHONY: pdfdocs htmldocs install-doc install-doc-pdf install-doc-html
 
 SHELL=/bin/bash
-
-# To make linuxcnc-checklink widely available
-export PATH:=$(BASEPWD)/../scripts:$(PATH)
 
 # Ruby (asciidoctor / asciidoctor-pdf) reads source files in the locale's
 # default external encoding.  Containerised builds often inherit POSIX/C,
@@ -144,6 +141,7 @@ DOC_SRCS_EN := \
 	config/moveoff.adoc \
 	config/pncconf.adoc \
 	config/python-hal-interface.adoc \
+	config/python-lcnc_realtime.adoc \
 	config/python-interface.adoc \
 	config/stepconf.adoc \
 	config/stepper-diagnostics.adoc \
@@ -573,7 +571,7 @@ $(DOC_OUT_HTML)/pdf/index.html: $(PDF_TARGETS) ../scripts/make-docs-pdf-index
 	@mkdir -p $(dir $@)
 	$(Q)../scripts/make-docs-pdf-index
 
-htmldocs: svgs_made_from_dots .htmldoc-stamp checkref_en
+htmldocs: svgs_made_from_dots .htmldoc-stamp
 
 # When translations are enabled, the .adoc files in $(L)/ are produced by
 # the translateddocs target (po4a).  Teach make how to ask for them: the
@@ -590,8 +588,8 @@ endif
 
 # Depend on the stamp files, not the phony copy_asciidoc_files /
 # gen_complist aliases: a phony prereq is always "newer", so naming them
-# re-touched .htmldoc-stamp every run, dragging checkref and the css copy
-# with it.  The stamps fire only when their real inputs change.
+# re-touched .htmldoc-stamp every run, dragging the css copy
+# with it. The stamps fire only when their real inputs change.
 .htmldoc-stamp: .copy-asciidoc-stamp $(DOC_DIR)/.gen_complist-stamp $(HTML_TARGETS) .images-stamp .include-stamp $(DOC_OUT_HTML)/asciidoctor.css $(DOC_OUT_HTML)/rouge-github.css .lang-switcher-stamp
 	touch $@
 
@@ -681,42 +679,15 @@ $(DOC_OUT_HTML)/rouge-github.css: $(DOC_SRCDIR)/render-rouge-css.rb
 # gen_complist.py here after MAN_HTML_TARGETS would rewrite the file
 # with HTML-existence-dependent content (different miss_in_man set),
 # bumping mtime past .pot and re-triggering po4a on the next build.
-# Broken-link validation against generated HTML is checkref's job.
 # MAN_HTML_TARGETS is order-only: this stamp only needs the manpages built,
 # it does not read their content, and the post-processor rewrites them in
 # place later -- a normal prerequisite would then re-fire this stamp (and the
-# .htmldoc-stamp / checkref that depend on it) on every subsequent make.
+# .htmldoc-stamp that depend on it) on every subsequent make.
 $(DOC_DIR)/.gen_complist-stamp: $(DOC_OUT_ADOC)/en/hal/components_gen.adoc | $(MAN_HTML_TARGETS)
 	mkdir -p $(DOC_OUT_HTML)/en/hal
 	@touch $@
 
 gen_complist: $(DOC_DIR)/.gen_complist-stamp
-
-
-CHECKREF_TARGETS := checkref_en $(foreach L,$(LANGUAGES),checkref_$(L))
-.PHONY: $(CHECKREF_TARGETS)
-checkref: $(CHECKREF_TARGETS)
-
-# checkref_* stay phony aliases; the link check lives in stamp-gated rules
-# so it only re-runs when the HTML changes.  .htmldoc-stamp is filtered out
-# of the args so the stamp file is not handed to the link checker.
-checkref_en: $(DOC_DIR)/.checkref-english-stamp
-# --warn-on-failure: link checking has been a silent no-op for a long time
-# (w3c-linkchecker disables file:// URIs), so the tree may carry accumulated
-# broken links.  Report them without breaking the build for now; drop this
-# flag once the backlog is cleared so regressions fail the build again.
-$(DOC_DIR)/.checkref-english-stamp: $(DOC_TARGETS_HTML_EN) $(DOC_OUT_HTML)/en/index.html $(DOC_OUT_HTML)/en/gcode.html .htmldoc-stamp
-	$(DOC_SRCDIR)/checkref --warn-on-failure English $(filter %.html,$^)
-	@touch $@
-
-# Pattern rule for all languages.  Per-lang gcode.html is po4a-translated
-# from src/gcode.html and lands as a sibling to each lang's index.html.
-checkref_%: $(DOC_DIR)/.checkref-%-stamp ;
-$(DOC_DIR)/.checkref-%-stamp: $$(DOC_TARGETS_HTML_$$(call uc,$$*)) \
-			 $$(DOC_OUT_HTML)/%/gcode.html .htmldoc-stamp
-	$(DOC_SRCDIR)/checkref --warn-on-failure $(call lang_name,$*) $(filter %.html,$$^)
-	@touch $@
-
 
 MAN_SRCS_NOSO = $(patsubst $(DOC_MAN)/%,%, \
 			$(shell grep -s -L '^\.so ' $(MAN_SRCS)))
@@ -997,6 +968,7 @@ $(4)/%.pdf: $(1)/%.adoc .adoc-images-stamp $$(DOC_FONTS) | svgs_made_from_dots
 		--sourcemap \
 		-a compat-mode \
 		-a "doc-languages=$$(LANGUAGES)" \
+		-a "lcnc-lang=$3" \
 		-a xref-root=$$(dir $$<) \
 		-a "xref-exclude=$(2)" \
 		-a "scriptdir=$$(DOC_SRCDIR)/" \
@@ -1132,36 +1104,40 @@ $(foreach L,$(LANGUAGES),$(eval $(call HTML_COPY_RULE,$(L))))
 .images-stamp: .adoc-images-stamp .html-images-stamp
 	touch $@
 
-# Image copy from sources into the output tree.  HTML files for English
-# live at $(DOC_OUT_HTML)/en/<topic>/X.html; for translations at
-# $(DOC_OUT_HTML)/<lang>/<topic>/X.html.  The source images are in
-# $(DOC_SRCDIR)/<topic>/ regardless of language (translations are
-# image-symlinked to English originals via the sed below).  Generated SVGs are
-# not in src; fall back to the English build tree where they render.
-#
-# src="..." covers displayed images; href="...png" covers click-to-enlarge
-# targets from image:thumb[link=...] (which would otherwise 404).  The
-# extension filter keeps page/anchor hrefs out.
+# Materialise the shared image pool.  image_resolver has already rewritten
+# every HTML src/href to a pool path (image/<srcrel> or <lang>/image/<srcrel>);
+# here we copy each referenced image to the location its link points at.  All
+# languages' generic refs resolve to the one shared image/ tree, so the first
+# copy wins and the existence guard skips the rest: no per-language duplication,
+# no symlinks (a server may lack FollowSymLinks), and a no-op second build.
+# DEST comes from the page dir + the ref; <srcrel> finds the source under
+# $(DOC_SRCDIR) (or the English build tree for generated SVGs).
 #
 # Depend on .lang-switcher-stamp so this runs after the post-processor has
 # rewritten the HTML in place; otherwise that later rewrite leaves this stamp
 # older than its inputs and the image copy re-fires on every subsequent make.
 .html-images-stamp: $(DOC_TARGETS_HTML) .lang-switcher-stamp
-	set -e; for HTML_FILE in $^; do \
-		HTML_REL=$$(echo $$HTML_FILE | sed 's%^$(DOC_OUT_HTML)/%%'); \
-		LANG=$$(echo $$HTML_REL | cut -d/ -f1); \
-		REST=$$(echo $$HTML_REL | cut -d/ -f2-); \
-		HTML_DIR=$$(dirname $$REST | cut -d/ -f1); \
-		for IMAGE_FILE in $$(grep -oE '(src|href)="[^"]+"' $$HTML_FILE | sed -E 's/^(src|href)="//;s/"$$//' | grep -vE '^https?:|^data:|^/|lcnc-docs\.svg' | grep -iE '\.(png|jpe?g|gif|svg|webp)$$'); do \
-			IMAGE_DIR=$$(dirname $$IMAGE_FILE); \
-			IMAGE_PATH=$(DOC_SRCDIR)/$$HTML_DIR/$$IMAGE_FILE; \
-			if [ ! -e $$IMAGE_PATH ] ; then \
-				IMAGE_PATH=$(DOC_OUT_ADOC)/en/$$HTML_DIR/$$IMAGE_FILE; \
-			fi; \
-			mkdir -p $(DOC_OUT_HTML)/$$LANG/$$HTML_DIR/$$IMAGE_DIR; \
-			cp -f $$IMAGE_PATH $(DOC_OUT_HTML)/$$LANG/$$HTML_DIR/$$IMAGE_FILE; \
+	set -e; \
+	HTMLROOT=$$(realpath $(DOC_OUT_HTML)); \
+	place() { \
+		PAGE_DIR=$$(dirname $$1); \
+		for REF in $$(grep -oE '(src|href)="[^"]+"' $$1 | sed -E 's/^(src|href)="//;s/"$$//' | grep -vE '^https?:|^data:|^#|^/|lcnc-docs\.svg' | grep -iE '\.(png|jpe?g|gif|svg|webp)$$'); do \
+			DEST=$$(realpath -m "$$PAGE_DIR/$$REF"); \
+			case $$DEST in $$HTMLROOT/*) ;; *) echo "html-images: out-of-tree $$DEST (page $$1)" >&2; exit 1;; esac; \
+			[ -e "$$DEST" ] && continue; \
+			REL=$${DEST#$$HTMLROOT/}; \
+			case $$REL in \
+				image/*) SRCREL=$${REL#image/}; SRC=$(DOC_SRCDIR)/$$SRCREL; [ -e "$$SRC" ] || SRC=$(DOC_OUT_ADOC)/en/$$SRCREL;; \
+				*/image/*) L=$${REL%%/*}; SRCREL=$${REL#*/image/}; SRC=$(DOC_SRCDIR)/$$SRCREL; [ -e "$$SRC" ] || SRC=$(DOC_OUT_ADOC)/$$L/$$SRCREL;; \
+				*) echo "html-images: unexpected pool dest $$REL (page $$1)" >&2; exit 1;; \
+			esac; \
+			if [ ! -e "$$SRC" ] ; then echo "html-images: no source for $$REL (page $$1)" >&2; exit 1; fi; \
+			mkdir -p "$$(dirname "$$DEST")"; \
+			cp -f "$$SRC" "$$DEST"; \
 		done; \
-	done > $@.new && mv $@.new $@
+	}; \
+	for HTML_FILE in $(DOC_TARGETS_HTML); do place $$HTML_FILE; done \
+	> $@.new && mv $@.new $@
 
 # mb2hal_HOWTO.ini lives in the docs source tree next to mb2hal.adoc, so the
 # English build includes it directly.  Copy it into the per-language build
@@ -1187,10 +1163,12 @@ $(foreach L,$(LANGUAGES),$(eval $(call HTML_COPY_RULE,$(L))))
 		cp -f emc/usr_intf/gmoccapy/release_notes.txt $(DOC_OUT_HTML)/$$lang/gui/gmoccapy_release_notes.txt ; \
 	done) > $@.new && mv $@.new $@
 
-# Copy all images used by translated adoc files into the directories
-# with translated adoc files.  The .translateddocs-stamp prerequisite
-# only exists when BUILD_DOCS_TRANSLATED=yes; without it the rule has
-# no work to do (filter-out yields empty) so we skip the dep too.
+# Stage the images used by translated adoc files into the translated adoc
+# tree, so asciidoctor-pdf can read them at render time.  The .translateddocs-stamp
+# prerequisite only exists when BUILD_DOCS_TRANSLATED=yes; without it the rule
+# has no work to do (filter-out yields empty) so we skip the dep too.  HTML
+# image placement is no longer done here: the image_resolver rewrites HTML src
+# to the shared pool and .html-images-stamp materialises it.
 ifeq ($(BUILD_DOCS_TRANSLATED),yes)
 ADOC_IMAGES_STAMP_DEPS := $(DOC_DIR)/.translateddocs-stamp
 endif
@@ -1206,13 +1184,10 @@ endif
 				IMAGE_PATH=$(DOC_OUT_ADOC)/en/$$EN_DIR/$$IMAGE_FILE; \
 			fi; \
 			TIMAGE_PATH=$(DOC_OUT_ADOC)/$$ADOC_DIR/$$IMAGE_FILE; \
-			HIMAGE_PATH=$(DOC_OUT_HTML)/$$ADOC_DIR/$$IMAGE_FILE; \
 			mkdir -p $(DOC_OUT_ADOC)/$$ADOC_DIR/$$IMAGE_DIR; \
-			mkdir -p $(DOC_OUT_HTML)/$$ADOC_DIR/$$IMAGE_DIR; \
 			if [ ! -e $$TIMAGE_PATH ] ; then \
 				echo "Generating $$TIMAGE_PATH for $$ADOC_FILE"; \
 				cp -f $$IMAGE_PATH $$TIMAGE_PATH; \
-				cp -f $$IMAGE_PATH $$HIMAGE_PATH; \
 			fi ; \
 		done; \
 	done > $@.new && mv $@.new $@
@@ -1223,6 +1198,10 @@ endif
 # is one greater than the topic-relative slash count.
 $(DOC_SRCDIR)/%.html: LCNC_CSSREL=$(shell python3 -c "print('../' * (1 + '$*'.count('/')))")
 $(DOC_OUT_ADOC)/%.html: LCNC_CSSREL=$(shell python3 -c "print('../' * '$*'.count('/'))")
+# English renders under $(DOC_OUT_ADOC)/en with a stem that omits the en/
+# prefix (DOC_SRCS_EN paths carry no lang dir), so its slash count is one short
+# of the output depth.  Add the +1 here, matching the $(DOC_SRCDIR) rule above.
+$(DOC_OUT_ADOC)/en/%.html: LCNC_CSSREL=$(shell python3 -c "print('../' * (1 + '$*'.count('/')))")
 
 # asciidoctor HTML rule used for every language.
 #	$1 lang tag (en, de, ...)
@@ -1233,13 +1212,20 @@ $(DOC_OUT_ADOC)/%.html: LCNC_CSSREL=$(shell python3 -c "print('../' * '$*'.count
 #	$4 xref-exclude pattern (English filters all lang subdirs; translated
 #	trees are rooted inside their own lang dir so the exclude is empty).
 define ASCIIDOCTOR_HTML_RULE
-$$(patsubst %.adoc,$2/%.html,$$(DOC_SRCS_$(call toUC,$1)_SMALL)): $2/%.html: $2/%.adoc $$(DOC_SRCDIR)/docinfo.html $$(DOC_SRCDIR)/docinfo-header.html
+# Order-only dep on .adoc-images-stamp so translated images are staged before
+# the resolver probes for them at render (it also falls back to docs/src).
+$$(patsubst %.adoc,$2/%.html,$$(DOC_SRCS_$(call toUC,$1)_SMALL)): $2/%.html: $2/%.adoc $$(DOC_SRCDIR)/docinfo.html $$(DOC_SRCDIR)/docinfo-header.html | .adoc-images-stamp
 	$$(ECHO) "Building '$1' adoc to html: " $$<
 	$$(Q)asciidoctor -r $$(realpath $$(DOC_SRCDIR))/extensions/xref_resolver.rb \
+		 -r $$(realpath $$(DOC_SRCDIR))/extensions/image_resolver.rb \
 		 -r $$(realpath $$(DOC_SRCDIR))/extensions/rouge_hal.rb \
 		 -r $$(realpath $$(DOC_SRCDIR))/extensions/rouge_ngc.rb \
 		 -r $$(realpath $$(DOC_SRCDIR))/extensions/rouge_ini.rb \
 		 -a compat-mode \
+		 -a "doc-languages=$$(LANGUAGES)" \
+		 -a "lcnc-lang=$1" \
+		 -a "lcnc-srcdir=$$(realpath $$(DOC_SRCDIR))" \
+		 -a "lcnc-adocdir=$$(realpath $$(DOC_OUT_ADOC))" \
 		 -a xref-root=$3 \
 		 -a "xref-exclude=$4" \
 		 -a "relindir=$$(shell dirname $$*)" \
@@ -1320,7 +1306,6 @@ docclean:
 	-rm -f .include-stamp
 	-rm -f $(DOC_DIR)/.translateddocs-stamp
 	-rm -f $(DOC_DIR)/.gen_complist-stamp
-	-rm -f $(DOC_DIR)/.checkref-*-stamp
 	-rm -f $(OTHER_DOTFILES:.dot=.svg)
 
 

@@ -690,6 +690,15 @@ AC_DEFINE_UNQUOTED([EMC2_DEFAULT_TOOLTABLE], "$DEFAULT_TOOLTABLE", [Default nml 
 # we decide based on RIP or install where stuff goes                         #
 ##############################################################################
 
+AC_ARG_WITH([tcl-dir],
+    [AS_HELP_STRING([--with-tcl-dir=DIR],
+        [directory for LinuxCNC Tcl scripts (default: auto-detected from tcl_pkgPath)])],
+    [EMC2_TCL_DIR="$withval"],
+    [TCL_GET_DIR=$(echo [['set d [lindex [lsearch -all -inline -glob $tcl_pkgPath /usr/share/*] 0]; if {$d eq ""} {set d [lindex [lsearch -all -inline -glob $tcl_pkgPath /usr/lib*] 0]}; puts $d']] | tclsh 2>/dev/null)
+     AS_IF([test -z "$TCL_GET_DIR"],
+           [AC_MSG_ERROR([could not determine Tcl package dir from tcl_pkgPath])])
+     EMC2_TCL_DIR="$TCL_GET_DIR/linuxcnc"])
+
 fe () {
     # Fully expand argument.  Example:
     # ${datadir} -> ${datarootdir} -> ${prefix}/share -> /usr/local
@@ -726,9 +735,8 @@ else
     EMC2_SCRIPT=$EMC2_BIN_DIR/linuxcnc
     EMC2_SUFFIX=""
     EMC2_ICON=linuxcncicon
-    EMC2_TCL_DIR=${prefix}/lib/tcltk/linuxcnc
-    EMC2_TCL_LIB_DIR=${prefix}/lib/tcltk/linuxcnc
-    EMC2_LANG_DIR=${prefix}/lib/tcltk/linuxcnc/msgs
+    EMC2_TCL_LIB_DIR="${EMC2_TCL_DIR}"
+    EMC2_LANG_DIR="${EMC2_TCL_DIR}/msgs"
     EMC2_PO_DIR=${prefix}/share/locale
     EMC2_HELP_DIR=${prefix}/share/doc/linuxcnc
     case $MODULE_DIR in
@@ -1204,16 +1212,6 @@ For a fully custom path, set the var directly:
     fi
     AC_SUBST(NOTOCJK_REGULAR_TTC)
     AC_SUBST(NOTOCJK_BOLD_TTC)
-    fi
-fi
-
-# Programs required only for building the HTML documentation
-if ( test "$BUILD_DOCS_HTML" = "yes" ) ; then
-    AC_PATH_PROG(CHECKLINK,checklink,"none")
-    if ( test "none" = "$CHECKLINK" ) ; then
-        AC_MSG_WARN([no checklink, HTML documentation cannot be built
-install with "sudo apt-get install w3c-linkchecker"])
-        BUILD_DOCS_HTML=no
     fi
 fi
 
@@ -1720,6 +1718,19 @@ add_to_cflags() {
 # Always add -Wextra
 add_to_cflags "-Wextra"
 
+# Add option to enable warnings when integer 0 is used to act
+# as NULL or nullptr in assignment or comparison.
+AC_ARG_ENABLE(wzero-as-null-pointer-constant,
+    AS_HELP_STRING(
+      [--enable-wzero-as-null-pointer-constant],
+      [Warn on zero being used as NULL pointer constant (-Wzero-as-null-pointer-constant).],
+    ),
+    [
+      case "$enableval" in
+        (yes) add_to_cflags "-Wzero-as-null-pointer-constant" ;;
+      esac
+    ])
+
 # The last thing before subst-exporting CFLAGS and CXXFLAGS is to add -Werror
 # if requested. Doing it earlier causes conf-tests to fail that are supposed to
 # succeed when they generate warnings.
@@ -1753,7 +1764,6 @@ AC_CONFIG_FILES([../scripts/halcmd_twopass], [chmod +x ../scripts/halcmd_twopass
 AC_CONFIG_FILES([../scripts/realtime], [chmod +x ../scripts/realtime])
 AC_CONFIG_FILES([../scripts/runtests], [chmod +x ../scripts/runtests])
 AC_CONFIG_FILES([../scripts/linuxcnc_var], [chmod +x ../scripts/linuxcnc_var])
-AC_CONFIG_FILES([../scripts/linuxcnc-checklink], [chmod +x ../scripts/linuxcnc-checklink])
 AC_CONFIG_FILES(Makefile.inc)
 AC_CONFIG_FILES(Makefile.modinc)
 AC_CONFIG_FILES(../tcl/linuxcnc.tcl)
